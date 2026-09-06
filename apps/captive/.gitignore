@@ -1,0 +1,34 @@
+# Dependencies
+node_modules/
+
+# Logs
+logs/
+*.log
+
+# Runtime
+watchdog.stop
+watchdog.lock
+service.pid
+
+# Certificates (keep directory structure, ignore actual certs)
+certs/*.pem
+certs/*.key
+certs/*.crt
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Claude
+.claude/
+
+# Debug
+debug.log

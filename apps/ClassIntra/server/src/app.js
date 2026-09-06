@@ -1,0 +1,378 @@
+var crashLogger = require('./utils/crash-logger');
+crashLogger.installCrashHandlers();
+
+var errorsLib = require('./core/errors');
+var globalErrorHandler = errorsLib.globalErrorHandler;
+
+require('dotenv').config();
+var express = require('express');
+var path = require('path');
+var fs = require('fs');
+var cookieParser = require('cookie-parser');
+var cors = require('cors');
+var helmet = require('helmet');
+var morgan = require('morgan');
+var compression = require('compression');
+var rateLimit = require('./middleware/rate-limit').createRateLimiter;
+var config = require('./config');
+var initDb = require('./utils/init-db');
+
+initDb.initDatabase();
+
+var app = express();
+var PORT = process.env.PORT || 9001;
+
+app.use(helmet({
+  contentSecurityPolicy: false,
+  crossOriginEmbedderPolicy: false,
+  crossOriginOpenerPolicy: false,
+  crossOriginResourcePolicy: false,
+  originAgentCluster: false
+}));
+var corsOrigins = process.env.CORS_ORIGINS || '';
+var corsOptions;
+if (corsOrigins) {
+  var originList = corsOrigins.split(',').map(function(s) { return s.trim(); });
+  corsOptions = {
+    origin: function(origin, callback) {
+      if (!origin || originList.indexOf(origin) !== -1) callback(null, true);
+      else callback(null, false);
+    },
+    credentials: true
+  };
+} else {
+  // 未配置 CORS_ORIGINS 时禁止跨域（同源访问不受影响，避免任意网站携带凭证跨域访问）
+  corsOptions = { origin: false, credentials: false };
+}
+app.use(cors(corsOptions));
+app.use(morgan('dev'));
+// Gzip 压缩：SVG 是 XML 文本格式，压缩率极高（70-90%），显著减小图标传输体积
+app.use(compression({
+  // 压缩级别 6：平衡 CPU 与压缩率
+  level: 6,
+  // 仅对大于 1KB 的响应启用压缩（跳过极小文件）
+  threshold: 1024,
+  // 确保 SVG 文本格式被压缩（image/svg+xml 默认在白名单中，此处显式声明）
+  filter: function(req, res) {
+    if (req.headers['x-no-compression']) return false;
+    return compression.filter(req, res);
+  }
+}));
+// 敏感认证操作（登录/注册/刷新token）严格限流：60/min
+app.use('/api/auth/login', rateLimit({ max: 60, windowMs: 60000, message: '登录请求过于频繁，请稍后再试' }));
+app.use('/api/auth/register', rateLimit({ max: 60, windowMs: 60000, message: '注册请求过于频繁，请稍后再试' }));
+app.use('/api/auth/refresh-token', rateLimit({ max: 60, windowMs: 60000, message: '请求过于频繁，请稍后再试' }));
+// 心跳/状态查询（check-status/ban-info）宽松限流：300/min（前端2秒轮询=30/min/标签页，多标签页容错）
+app.use('/api/auth', rateLimit({ max: 300, windowMs: 60000, message: '请求过于频繁，请稍后再试' }));
+app.use('/api/admin', rateLimit({ max: 200, windowMs: 60000 }));
+// ai-chat/community/chat 的 rateLimit 由 manifest.backend.rateLimit 声明，route-aggregator 自动应用
+
+app.use(function(req, res, next) {
+  res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+  next();
+});
+
+app.use(express.json({ limit: '1mb' }));
+app.use(express.urlencoded({ extended: false, limit: '1mb' }));
+app.use(cookieParser());
+
+app.use('/resources', express.static(config.resourcesDir, {
+  maxAge: '0',
+  immutable: false,
+  setHeaders: function(res, filePath) {
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+    res.removeHeader('Cross-Origin-Embedder-Policy');
+    res.removeHeader('Cross-Origin-Resource-Policy');
+    res.removeHeader('Cross-Origin-Opener-Policy');
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    // 支持WASM等跨域嵌入资源加载
+    var ext = path.extname(filePath).substring(1).toLowerCase();
+    if (ext === 'wasm' || ext === 'js' || ext === 'mjs' || ext === 'json') {
+      res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+    }
+    if (ext === 'wasm') {
+      res.setHeader('Content-Type', 'application/wasm');
+      res.setHeader('Accept-Ranges', 'bytes');
+    }
+  }
+}));
+
+// FontAwesome字体文件兼容路由 - 确保旧缓存CSS的字体请求也能正常返回
+var faFontDir = path.join(config.resourcesDir, 'public', 'fontawesome', 'webfonts');
+var faFontFiles = {
+  'fa-solid-900.woff2': null, 'fa-solid-900.ttf': null,
+  'fa-regular-400.woff2': null, 'fa-regular-400.ttf': null,
+  'fa-brands-400.woff2': null, 'fa-brands-400.ttf': null,
+  'fa-v4compatibility.woff2': null, 'fa-v4compatibility.ttf': null
+};
+try { fs.readdirSync(faFontDir).forEach(function(f) { if (faFontFiles.hasOwnProperty(f)) faFontFiles[f] = path.join(faFontDir, f); }); } catch(e) {}
+
+app.use(function(req, res, next) {
+  var fname = path.basename(req.path);
+  if (faFontFiles[fname]) {
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.sendFile(faFontFiles[fname]);
+    return;
+  }
+  next();
+});
+
+app.use(express.static(path.join(__dirname, '../../client/dist'), {
+  index: false,
+  maxAge: '0',
+  immutable: false,
+  setHeaders: function(res) {
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+  }
+}));
+
+// 应用目录静态资源（支持 manifest.icon 指向应用目录内图标）
+// 访问路径：/apps-static/{appName}/icon.png → apps/{appName}/icon.png
+try {
+  if (fs.existsSync(path.join(__dirname, '../../apps'))) {
+    app.use('/apps-static', express.static(path.join(__dirname, '../../apps'), {
+      maxAge: '0',
+      immutable: false,
+      setHeaders: function(res) {
+        res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+        res.setHeader('Pragma', 'no-cache');
+        res.setHeader('Expires', '0');
+        res.setHeader('Access-Control-Allow-Origin', '*');
+      }
+    }));
+  }
+} catch (e) {
+  console.warn('[app] apps-static 静态路由初始化失败（apps/ 目录可能不存在）:', e.message);
+}
+
+// 第三方市场应用静态资源（entry.js / style.css / icon）
+// 访问路径：/market-static/{appName}/frontend/entry.js → market-apps/{appName}/frontend/entry.js
+var marketService = require('./core/market-service');
+try {
+  fs.mkdirSync(marketService.marketAppsDir, { recursive: true });
+  app.use('/market-static', express.static(marketService.marketAppsDir, {
+      maxAge: '0',
+      immutable: false,
+      setHeaders: function(res) {
+        res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+        res.setHeader('Pragma', 'no-cache');
+        res.setHeader('Expires', '0');
+        res.setHeader('Access-Control-Allow-Origin', '*');
+      }
+    }));
+} catch (e) {
+  console.warn('[app] market-static 静态路由初始化失败:', e.message);
+}
+
+app.use('/api/auth', require('./routes/auth'));
+app.use('/api/user', require('./routes/user'));
+app.use('/api/admin', require('./routes/admin'));
+app.use('/api/assets', require('./routes/assets'));
+app.use('/api/setup', require('./routes/setup'));
+app.use('/api/level', require('./routes/level'));
+app.use('/api/cdn', require('./routes/cdn-proxy'));
+app.use('/api/system', require('./routes/system'));
+app.use('/api/realtime', require('./routes/realtime'));
+app.use('/api/integrations', require('./routes/integrations'));
+app.use('/api/market', require('./routes/market'));
+
+// 应用路由（从 apps/*/manifest.json 聚合挂载，rateLimit 由 manifest 声明）
+var routeAggregator = require('./core/route-aggregator');
+routeAggregator.mountAppRoutes(app);
+
+// 第三方市场应用路由热挂载调度器（安装/卸载/更新不重启服务器）
+marketService.init();
+app.use(marketService.dispatcher());
+
+// 阶段 3：ServiceRegistry 注册后端核心服务（阶段 4 集成系统会扩展）
+var serviceRegistry = require('./core/service-registry').getServiceRegistry();
+serviceRegistry.register('db', function() { return require('./utils/db'); });
+serviceRegistry.register('errors', function() { return errorsLib; });
+// 阶段 4 将注册 'integration' 服务（webhook 接收 + token 管理）
+
+// Setup 页面路由
+app.get('/setup', function(req, res) {
+  res.sendFile(path.join(__dirname, '../public/setup.html'));
+});
+
+app.get('*', function(req, res) {
+  res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+
+  var versionInfo = {};
+  try {
+    versionInfo = JSON.parse(fs.readFileSync(path.join(__dirname, '../version.json'), 'utf8'));
+  } catch (e) {}
+  var currentHash = versionInfo.buildHash || '';
+  var clientHash = req.cookies && req.cookies._cv ? req.cookies._cv : '';
+
+  // 版本检查：仅更新 cookie，不修改 URL 以保护浏览器历史记录
+  // 缓存清理由 HTML 中的 cacheBuster 脚本处理（仅清缓存，不 replace URL）
+  if (currentHash && clientHash !== currentHash) {
+    res.setHeader('Set-Cookie', '_cv=' + currentHash + '; Path=/; Max-Age=31536000; SameSite=Lax');
+  }
+
+  var indexPath = path.join(__dirname, '../../client/dist/index.html');
+  try {
+    var html = fs.readFileSync(indexPath, 'utf8');
+    var wsPort = process.env.WS_PORT || '10001';
+    var injectScript = '<script>window.__WS_PORT__="' + wsPort + '";</script>';
+    html = html.replace('<head>', '<head>' + injectScript);
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.end(html);
+  } catch (e) {
+    res.sendFile(indexPath);
+  }
+});
+
+app.use(function(err, req, res, next) {
+  var status = err.status || err.statusCode || 500;
+  var message = '服务器内部错误';
+  if (status === 400) message = '请求参数错误';
+  else if (status === 401) message = '未授权访问';
+  else if (status === 403) message = '访问被拒绝';
+  else if (status === 404) message = '资源不存在';
+  else if (status === 429) message = '请求过于频繁';
+  else if (status === 413) message = '请求数据过大';
+  if (status < 500) {
+    console.warn('[API] ' + req.method + ' ' + req.path + ' -> ' + status + ': ' + (err.message || message));
+  } else {
+    console.error('[API] ' + req.method + ' ' + req.path + ' -> ' + status + ':', err.message || 'Unknown error');
+    // 5xx 错误交给 globalErrorHandler（写入 crash.log + 通知订阅者）
+    globalErrorHandler.handle(err);
+  }
+  res.status(status).json({ code: status, message: message });
+});
+
+var portRetries = 0;
+var MAX_PORT_RETRIES = 10;
+
+var server = app.listen(PORT, function() {
+  portRetries = 0;
+  console.log('ClassIntra Server running on port ' + PORT);
+  try {
+    var jwtUtil = require('./utils/qweather-jwt');
+    jwtUtil.warmUp().then(function(ok) {
+      if (ok) console.log('[QWeather] JWT token pre-warmed');
+      else console.warn('[QWeather] JWT warm-up failed');
+    });
+  } catch (e) {}
+});
+
+server.on('error', function(err) {
+  if (err.code === 'EADDRINUSE') {
+    portRetries++;
+    if (portRetries > MAX_PORT_RETRIES) {
+      console.error('[Server] Port ' + PORT + ' still in use after ' + MAX_PORT_RETRIES + ' retries. Exiting.');
+      process.exit(1);
+    }
+    var delay = 3000 + portRetries * 2000;
+    console.error('[Server] Port ' + PORT + ' is in use. Retry ' + portRetries + '/' + MAX_PORT_RETRIES + ' in ' + delay + 'ms...');
+    setTimeout(function() {
+      try { server.close(); } catch (e) {}
+      server.listen(PORT);
+    }, delay);
+  } else {
+    console.error('[Server] Server error:', err.message);
+  }
+});
+
+var isShuttingDown = false;
+function gracefulShutdown(signal) {
+  if (isShuttingDown) return;
+  isShuttingDown = true;
+  console.log('[Server] Received ' + signal + ', shutting down gracefully...');
+
+  try {
+    var chatServer = require('./ws/chat-server');
+    if (chatServer.broadcast) {
+      chatServer.broadcast({ type: 'server_shutting_down', message: '服务器正在重启，请稍后...' });
+    }
+  } catch (e) {}
+
+  setTimeout(function() {
+    server.close(function() {
+      console.log('[Server] HTTP server closed');
+      process.exit(0);
+    });
+  }, 1000);
+
+  setTimeout(function() {
+    console.error('[Server] Forced shutdown after timeout');
+    process.exit(1);
+  }, 10000);
+}
+
+process.on('SIGTERM', function() { gracefulShutdown('SIGTERM'); });
+process.on('SIGINT', function() { gracefulShutdown('SIGINT'); });
+
+require('./ws/chat-server');
+
+// ======== 天气提醒定时检查 ========
+var weatherAlertLastChecked = {};
+
+function startWeatherAlertScheduler() {
+  setInterval(function() {
+    var db = require('./utils/db');
+    var now = new Date();
+    var currentTime = ('0' + now.getHours()).slice(-2) + ':' + ('0' + now.getMinutes()).slice(-2);
+    var todayKey = now.getFullYear() + '-' + ('0' + (now.getMonth() + 1)).slice(-2) + '-' + ('0' + now.getDate()).slice(-2);
+
+    try {
+      var schedules = db.prepare('SELECT * FROM weather_alert_settings WHERE enabled = 1').all();
+      for (var i = 0; i < schedules.length; i++) {
+        var scheduleKey = schedules[i].id + '_' + todayKey;
+        if (schedules[i].schedule_time === currentTime && !weatherAlertLastChecked[scheduleKey]) {
+          weatherAlertLastChecked[scheduleKey] = true;
+          console.log('[WeatherAlert] Scheduled check triggered at ' + currentTime);
+          var weatherRoute = require('../../apps/weather/backend/routes');
+          weatherRoute.checkWeatherAlert().then(function(result) {
+            if (result.has_rain || result.has_warning) {
+              var alertType = 'both';
+              if (result.has_rain && !result.has_warning) alertType = 'rain';
+              else if (!result.has_rain && result.has_warning) alertType = 'warning';
+
+              try {
+                var relayBus = require('./utils/relay-bus');
+                // 天气预警仅广播本地，不中继
+                relayBus.emitLocal('weather_alert', {
+                  alert_type: alertType,
+                  rain_text: result.rain_text,
+                  warnings: result.warnings,
+                  timestamp: new Date().toISOString()
+                });
+                console.log('[WeatherAlert] Broadcast sent: type=' + alertType + ', rain=' + result.has_rain + ', warning=' + result.has_warning);
+              } catch (e) {
+                console.error('[WeatherAlert] Broadcast failed:', e.message);
+              }
+            } else {
+              console.log('[WeatherAlert] No rain or warning detected at ' + currentTime);
+            }
+          }).catch(function(err) {
+            console.error('[WeatherAlert] Check failed:', err.message);
+          });
+        }
+      }
+    } catch (e) {
+      console.error('[WeatherAlert] Scheduler error:', e.message);
+    }
+
+    // 清理过期的 lastChecked 记录（保留当天之前的）
+    var keys = Object.keys(weatherAlertLastChecked);
+    for (var k = 0; k < keys.length; k++) {
+      if (keys[k].indexOf(todayKey) === -1) {
+        delete weatherAlertLastChecked[keys[k]];
+      }
+    }
+  }, 60000); // 每分钟检查一次
+}
+
+startWeatherAlertScheduler();

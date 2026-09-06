@@ -1,0 +1,39 @@
+# 忽略便携包运行时与本地产物（不入库）
+
+# ---- Node 运行时 / pnpm store / PM2 数据（体积大，不入库）----
+runtime/
+
+# ---- 依赖与构建产物 ----
+**/node_modules/
+**/dist/
+
+# ---- 数据库与日志 ----
+**/*.db
+**/*.db-journal
+**/*.db-shm
+**/*.db-wal
+**/*.sqlite
+**/*.sqlite3
+**/logs/
+*.log
+
+# ---- 环境变量 ----
+**/.env
+!**/.env.example
+
+# ---- 密钥与证书（私钥绝不入库）----
+*.pem
+*.key
+*.cert
+*.crt
+*.pfx
+*.p12
+certs/
+
+# ---- 预注册名单（含真实个人信息）----
+server/config/pre-records.json
+
+# ---- 系统杂项 ----
+Thumbs.db
+Desktop.ini
+.DS_Store

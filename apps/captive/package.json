@@ -1,0 +1,31 @@
+{
+  "name": "captive",
+  "version": "1.0.0",
+  "description": "校园热点 Captive Portal — 拦截 DNS 将学生设备透明重定向到 ClassIntra",
+  "main": "hotspot-redirect.js",
+  "scripts": {
+    "start": "node hotspot-redirect.js",
+    "dev": "node --watch hotspot-redirect.js"
+  },
+  "keywords": [
+    "dns",
+    "https",
+    "proxy",
+    "hotspot",
+    "captive-portal",
+    "windows",
+    "redirect",
+    "tls",
+    "reverse-proxy",
+    "classintra",
+    "education"
+  ],
+  "author": "ClassIntra",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "os": [
+    "win32"
+  ]
+}

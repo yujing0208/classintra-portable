@@ -1,0 +1,90 @@
+============================================================
+  Captive 热点劫持 - 使用说明（可选高级功能）
+  把学生访问的"畅言智慧课堂/问卷星/智学网"等平台域名
+  在 DNS 层重定向到本地 ClassIntra，学生设备零配置
+============================================================
+
+【原理】
+  教师电脑开移动热点 → 学生平板连热点
+  → 平板请求被拦截域名时，热点 DNS 直接返回教师机 IP
+  → 平板 HTTPS 请求被教师机自签名证书代理 → 转到 ClassIntra
+
+【前置条件】
+  1. Windows 10/11，电脑支持"移动热点"（设置 → 网络 → 移动热点）
+  2. ClassIntra 已启动（守护 7 号 或 前台 2-启动，监听 9001 端口）
+  3. 安装守护需以【管理员】身份运行脚本（日常运行不需要）
+
+【第一次使用（自动）】
+  运行 5-captive热点劫持-启动.bat 时，若检测到还没有证书，
+  会自动生成自签名证书（纯 Node 生成，无需安装 OpenSSL）。
+  如需重新生成：删除 apps\captive\certs\ 下文件再运行即可。
+
+【手动生成（可选，与自动二选一）】
+  打开 PowerShell（管理员），运行：
+    New-SelfSignedCertificate -DnsName "spark.changyan.com","ai.changyan.com","www.wjx.cn","www.zhixue.com","zhixue.com" -CertStoreLocation "Cert:\LocalMachine\My" -NotAfter (Get-Date).AddYears(5)
+  或使用 OpenSSL：
+    openssl req -x509 -newkey rsa:2048 -keyout apps\captive\certs\key.pem -out apps\captive\certs\cert.pem -days 1825 -nodes -subj "/CN=spark.changyan.com"
+  （证书文件放入 apps\captive\certs\ 即可）
+  ⚠ 手动方式生成的证书 SAN 可能不含全部域名，会逐个弹证书警告；
+    推荐直接用自动方式（5 号/5.2 脚本首次运行自动生成，含全部域名）。
+
+【添加拦截域名后重新生成证书】
+  1. 编辑 apps\captive\hotspot-redirect.js 的 interceptDomains 数组
+  2. 删除 apps\captive\certs\ 下两个文件
+  3. 重新运行 5-captive热点劫持-启动.bat（会自动按默认域名重生成；
+     如需让自定义域名也进入证书 SAN，可手动执行：
+     runtime\node\node.exe scripts\gen-cert.js apps\captive\certs 新域名.com）
+
+【日常使用（推荐：无窗口后台守护）】
+  右键 → 以管理员身份运行：5.2-captive守护安装.bat → 选 1
+  → 注册开机自启计划任务，watchdog 静默守护：
+     无黑窗口、不占任务栏；崩溃自动拉起；开机 30 秒后自动运行
+  → 学生平板连热点，访问被拦截域名即跳转 ClassIntra
+  → 日志：apps\captive\logs\service.log（运行中）与 watchdog.log
+  → 停止本次：管理员运行 6-停止Captive.bat（守护仍保留，下次开机自启）
+  → 彻底卸载：5.2-captive守护安装.bat → 选 2
+
+【前台调试（可选，仅排障时用）】
+  右键 → 以管理员身份运行：5-captive热点劫持-启动.bat
+  → 脚本自动开热点、放行防火墙，前台窗口实时显示劫持日志
+  → 窗口按 Ctrl+C 停止，或管理员运行 6-停止Captive.bat
+
+【停止】
+  管理员运行 6-停止Captive.bat（兼容前台与守护两种方式）
+
+【服务失败？先跑一键诊断】
+  右键 → 以管理员身份运行：5.5-captive诊断.bat
+  → 自动逐项检查：证书、53/443 端口被谁占用、热点是否生效、
+    ClassIntra(9001) 是否在跑、历史日志，并给出对应处理方法。
+  → 标 [失败] 的行按"处理"操作即可。
+
+【常见失败原因速查】
+  * 双击后窗口一闪而过  → 443 端口被占 / 证书缺失（诊断 [2][4]）
+  * 显示 running 但劫持不生效 → 53 被系统 SharedAccess 抢占，
+    脚本只提示不退出（诊断 [3]；重跑 5 号脚本会自动停它）
+  * 启动到一半退出 "Failed to start mobile hotspot"
+    → 热点开不起来（诊断 [6]：先手动开一次移动热点）
+  * 学生访问看到 502 "Backend unreachable"
+    → ClassIntra 没启动（先双击 2-启动ClassIntra.bat）
+  * 运行中反复崩溃 → 看门狗日志 apps\captive\logs\service.log（诊断 [8]）
+
+【修改拦截域名】
+  编辑 apps\captive\hotspot-redirect.js 顶部 CONFIG.interceptDomains
+  数组，例如加入 'example.com'（自动匹配 *.example.com）
+
+【当前生效拦截域名】
+  spark.changyan.com / ai.changyan.com / www.wjx.cn / zhixue.com
+  （zhixue.com 自动匹配其全部子域，含 www.zhixue.com）
+  提示：若手动改了拦截列表，证书需同步覆盖新域名 —— 本包
+  scripts\gen-cert.js 的默认域名列表已与拦截列表保持一致，
+  删除 apps\captive\certs\ 后重跑 5 号启动脚本即可整包同步。
+
+【注意事项】
+  * 客户端会提示"自签名证书不受信任"，属预期行为，点继续即可
+  * 学生设备访问的是 https 域名；若某平台用 http，则无法被劫持
+  * 守护模式会临时停止 Windows "Internet 连接共享(ICS)"服务以
+    释放 53 端口，属正常现象；5.2 卸载或 9-安全退出后如需恢复，
+    手动执行 sc start SharedAccess 即可
+  * 开机自启走计划任务（最高权限 + 无窗口），不依赖系统 PATH 中
+    是否有 node —— 便携版 runtime\node 已由守护脚本自动接好
+============================================================

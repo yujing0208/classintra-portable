@@ -2,8 +2,8 @@
   <img src="apps/ClassIntra/Banner.png" alt="ClassIntra 便携版" width="100%">
 </p>
 
-<h1 align="center">ClassIntra 便携版</h1>
-<p align="center"><strong>校园内网 WebOS · U 盘即插即用</strong> — 无需外网、无需安装，双击即运行</p>
+<h1 align="center">ClassIntra 便携版（一键启动形态）</h1>
+<p align="center"><strong>校园内网 WebOS + 热点劫持 · 一个 bat 全流程</strong> — 无需外网、无需安装，双击即运行</p>
 
 <div align="center">
 
@@ -17,90 +17,95 @@
 
 ## 这是什么
 
-把 **ClassIntra**（校园内网 WebOS，MIT）与其官方 **captive** 热点劫持组件（MIT）打包成一个**绿色便携工程**：
+把 **ClassIntra**（校园内网 WebOS，MIT）与 **captive** 热点劫持组件（MIT，含本地增强）打包成一个绿色便携工程。最终交付形态收敛为**一个入口脚本**：
 
-- 自带依赖安装/修复逻辑，拷贝到任何 Windows 10/11（64 位）电脑即可运行
-- 支持“U 盘即插即用”：学校电脑没网、没开发环境也能用
-- 内置 captive 集成：教师机开热点，学生平板访问智学网 / 畅言 / 问卷星等域名时自动转到本机 ClassIntra
+> **双击 `一键启动.bat` —— 自动提权 → 起 ClassIntra → 准备防火墙 → 绑 53 → 自动开热点 → 看门狗守护，全程无需手动操作。**
 
-本仓库是**完整可复现的源码工程**：`apps/` 下是两个上游的干净源码快照，根目录是便携化封装脚本与文档。克隆后按下方步骤即可自行构建出一份便携包。
+教师机开热点后，学生平板访问畅言（changyan.com）等域名时，在 DNS + HTTPS 层被劫持到本机 ClassIntra（`http://localhost:9001`），学生设备零配置、不需要外网。
+
+## 为什么热点要在 captive 之后开（重要机制）
+
+Windows「移动热点」由 ICS（Internet Connection Sharing）驱动，ICS 自带的 DNS 代理会占 `0.0.0.0:53` —— 正是 captive 要劫持 DNS 的端口，**谁先绑到谁说了算**。所以顺序固定为：
+
+```
+captive 绑定 UDP 53  →  热点随后自动打开
+（ICS 抢不到 53，但热点本身照常起来 —— 实测验证）
+```
+
+旧版「先开热点再启动 captive」的顺序因此作废，`一键启动.bat` 内已固化正确顺序，并由 `captive/watchdog.ps1`（每 20s）守护 ClassIntra 进程与热点状态。
 
 ## 目录结构
 
 ```
 classintra-portable/
-├─ 1-安装初始化.bat            首次使用：装依赖 + 生成配置 + 构建前端
-├─ 2-启动ClassIntra.bat        前台启动服务器并打开浏览器
-├─ 3-停止ClassIntra.bat        停止前台服务器
-├─ 4-更新代码.bat              在线更新源码（需本机装 git）
-├─ 5-captive热点劫持-启动.bat  热点劫持前台调试（管理员）
-├─ 5.2-captive守护安装.bat     热点劫持无窗口守护（装/卸，推荐）
-├─ 5.5-captive诊断.bat         服务失败时一键查原因（管理员）
-├─ 6-停止Captive.bat           停止热点劫持
-├─ 7-安装守护与开机自启.bat     ClassIntra 守护 + 开机自动恢复
-├─ 8-查看状态与日志.bat         PM2 状态与日志
-├─ 8-卸载守护.bat               卸载守护与开机自启
-├─ 9-安全退出.bat               停止所有服务，U 盘弹出前必做
-├─ apps/
-│  ├─ ClassIntra/              上游 ClassIntra 源码（MIT，含 .npmrc 国内镜像增强）
-│  └─ captive/                 上游 captive 源码（MIT，含智学网域名增强）
-├─ scripts/                     自研辅助脚本（证书生成/检查、开机自启）
-├─ docs/
-│  ├─ 便携版使用说明.txt        便携版完整操作说明（首次使用/守护/U盘）
-│  └─ captive-说明.txt          captive 热点劫持完整说明
+├─ 一键启动.bat                 唯一入口（自动提权，前台窗口运行，关窗即全停）
+├─ 提取云盘文件.bat             一键导出 ClassIntra 云盘全部文件（调 tools/export-cloud.js）
+├─ captive-使用说明.txt         captive 劫持 + 一键启动的完整使用说明（UTF-8）
+├─ captive/                     热点劫持运行件（自研封装，随包分发）
+│  ├─ hotspot-redirect.js       DNS 53 拦截 + HTTPS 443 反代 + HTTP 80 跳转
+│  ├─ hotspot-ctl.ps1           开/关/查 Windows 热点（支持等待 UDP 53 就绪）
+│  └─ watchdog.ps1              进程守护 + 热点监控
+├─ tools/                       自研辅助脚本
+│  ├─ relink.js                 便携包移动后自动修复 node_modules 链接
+│  ├─ make-env.js               首次运行生成 server\.env
+│  ├─ export-cloud.js           云盘文件全量导出
+│  ├─ copy-out.js               导出辅助
+│  └─ node_modules-manifest.json 依赖清单（relink 校验用）
+├─ apps/                        上游源码快照（MIT）
+│  ├─ ClassIntra/               上游 ClassIntra（含 .npmrc 国内镜像增强）
+│  └─ captive/                  上游 captive（含智学网域名增强）
+├─ scripts/                     证书生成/检查、开机自启（旧形态辅助，可选）
+├─ docs/                        便携版操作说明、captive 说明
 └─ LICENSE                      MIT（含上游版权声明）
 ```
 
-## 快速开始（从源码构建便携包）
+## 运行时布置（不入库的部分）
 
-> 便携包 = 本仓库 + 一个内置 Node 运行时目录 `runtime\`。运行时体积大不入库，
-> 首次构建时按下面方法放入即可（一次性）。
+以下内容体积大或含个人数据，**不入库**（见 `.gitignore`），部署时按下表放入/生成：
 
-**前置：Windows 10/11（64 位）电脑，能联网（仅首次构建需要）。**
+| 路径 | 内容 | 来源 |
+|---|---|---|
+| `runtime\node\node.exe` | 便携 Node.js（Windows x64） | [nodejs.org](https://nodejs.org/dist/) 解压放入 |
+| `runtime\node_gui\node.exe` | GUI 子系统 node（可选，ClassIntra 主进程用它免窗口；缺失时自动回退 `runtime\node`） | 同上，另放一份 |
+| `server\` | ClassIntra 服务端（由 `apps\ClassIntra` 源码构建：装依赖 → 构建 → 拷出 `server\`） | 见 docs/便携版使用说明.txt |
+| `client\dist\` | 前端构建产物 | 构建生成 |
+| `apps\`（本包根） | WebOS 应用集（admin/music/notes/timetable/…） | 随包 |
+| `Resources\` | 课表 `kb.yml`、音乐、照片、视频等 | 随包（个人数据不入库） |
+| `market-apps\`、`logs\` | 应用市场下载页 / 运行日志 | 运行时生成 |
+| `captive\certs\` | HTTPS 证书（`cert.pem`/`key.pem`） | `scripts/gen-cert.js` 首次运行生成，**私钥绝不入库** |
+| `server\.env` | 端口、管理员班管 ID 等配置 | `tools\make-env.js` 首次生成后手改 |
 
-1. 克隆本仓库到目标文件夹（如 `D:\ClassIntraPortable`）
-2. 放入内置 Node 运行时：
-   - 下载 [Node.js LTS Windows x64 zip](https://nodejs.org/dist/)（如 `node-v20.x-win-x64.zip`）
-   - 解压后把 `node.exe` 所在目录放为 `runtime\node\`（即存在 `runtime\node\node.exe`）
-   - 使 `runtime\node\` 内可用 `pnpm`：将 `node.exe` 同级放一份 `pnpm.cjs`，或在 `node_modules\pnpm\bin\pnpm.cjs`；脚本已按此约定查找
-3. 双击 `1-安装初始化.bat`，自动完成：安装依赖（国内镜像）→ 生成 `server\.env` → 初始化数据库 → 构建前端
-4. 双击 `2-启动ClassIntra.bat` → 浏览器自动打开 `http://localhost:9001`
+## 快速开始
 
-之后整个文件夹可随意拷贝/移动（U 盘也行），到新电脑双击 `2-启动` 即可，无需重装。
+1. 克隆本仓库，按上表放入 `runtime\`、`server\` 等
+2. 双击 **`一键启动.bat`**（UAC 弹窗点「是」），等它跑完 4 步
+3. 浏览器打开 `http://localhost:9001`；学生平板连上本机热点即被自动引到 ClassIntra
+4. 关闭命令窗口（或 Ctrl+C）即全部停止；热点不会自动关，需要手动关
 
-## 教室上课场景（captive 热点劫持）
+首次配置（管理员班管 ID、课表 `Resources\public\kb.yml` 的改法）见 **`captive-使用说明.txt`** 与 `docs\便携版使用说明.txt`。
 
-1. 部署：`1-安装初始化` → `7-安装守护与开机自启`（ClassIntra 常驻）
-2. 本机开 Windows“移动热点”，学生平板连上
-3. 右键 `5.2-captive守护安装.bat` → 以管理员身份运行 → 选 1（无窗口守护）
-4. 学生访问 `ai.changyan.com` / `www.wjx.cn` / `zhixue.com` 等域名 → 自动跳转到本机 ClassIntra（DNS+HTTPS 劫持，学生设备零配置）
-5. 下课：`9-安全退出.bat` 再关热点
+## 从云盘导出文件
 
-详细原理、排障、证书安装到平板的说明见 `docs/captive-说明.txt`。
-
-## captive 证书说明
-
-captive 的 HTTPS 反代使用**自签名证书**，由 `scripts/gen-cert.js` 首次运行自动生成到
-`apps/captive/certs/`（纯 Node 实现，无需 OpenSSL；覆盖拦截域名含智学网）。
-
-⚠️ 证书私钥 `key.pem` 只在运行时生成，**从不入库**（已在 .gitignore 排除）。
+双击 `提取云盘文件.bat`：用内置 node 调 `tools/export-cloud.js`，把 ClassIntra 云盘里的全部文件拉到本地导出目录并自动打开（支持把参数透传给脚本）。
 
 ## 常见问题
 
-- **启动提示“找不到 runtime\node\node.exe”** → 未放入内置 Node 运行时，见“快速开始”第 2 步。
-- **依赖修复失败** → 用 `1-安装初始化.bat` 重跑；便携包移动后脚本会自动修复 pnpm 链接。
-- **端口被占用** → 编辑 `apps\ClassIntra\server\.env` 的 `PORT / WS_PORT / RELAY_PORT`。
-- **想清空数据重来** → 停止服务后删除 `apps\ClassIntra\server\database\classintra.db`，再启动自动重建。
-- **cmd 窗口中文乱码？** → 本仓库 `.bat` 采用 GBK（ANSI）编码以兼容 Windows 命令行为准；在 GitHub 网页或某些编辑器中预览乱码属正常现象，**不影响实际运行**。`.md`/`.txt`/`.js` 均为 UTF-8。
+- **双击没反应/报缺权限** → 必须 UAC 提权；若上次有提权残留进程占着 53/443，脚本会先清理。
+- **提示找不到 `runtime\node\node.exe`** → 未放入运行时，见上表。
+- **443 被占用**（常见：Watt Toolkit/Steam++ 的加速） → 关掉占用者再启动，脚本会给出占用提示。
+- **学生页面打不开/一直转圈** → 先看 `logs\` 下四个日志；典型坑与排查顺序见 `docs\captive-说明.txt`。
+- **cmd 窗口中文乱码？** → `.bat` 采用 GBK（ANSI）以兼容 Windows 命令行；GitHub 网页预览乱码属正常，不影响运行。`README`/`docs`/`tools/*.js` 均为 UTF-8。
+
+## 关于旧版「编号多步骤 bat」
+
+早期版本按「1-安装初始化 → 2-启动 → 5.2 守护安装 → 9-安全退出」分步操作，已整体被 `一键启动.bat` 取代并从仓库移除——需要回看请在 git 历史中找（最后一次包含它们的提交）。`scripts/` 里的开机自启脚本仍可单独使用（可选）。
 
 ## 与上游的关系 / 本地增强
 
 | 目录 | 上游 | 本仓库相对上游的改动 |
 |---|---|---|
-| `apps/ClassIntra` | [ClassIntra/ClassIntra](https://github.com/ClassIntra/ClassIntra) `5c93e6a` | `.npmrc` 增加国内镜像（registry/better-sqlite3 预编译镜像）与便携注释 |
-| `apps/captive` | [ClassIntra/captive](https://github.com/ClassIntra/captive) `559b37d` | `hotspot-redirect.js` 拦截域名加入 `zhixue.com`；`start-hotspot-redirect.bat` 增加便携 node PATH 适配 |
-
-上游更新可用 `4-更新代码.bat`（在 `apps\ClassIntra` 内 `git pull`）同步。
+| `apps/ClassIntra` | [ClassIntra/ClassIntra](https://github.com/ClassIntra/ClassIntra) `5c93e6a` | `.npmrc` 国内镜像（registry/better-sqlite3 预编译）与便携注释 |
+| `apps/captive` | [ClassIntra/captive](https://github.com/ClassIntra/captive) `559b37d` | 拦截域名加入 `zhixue.com`；便携 node 适配；`hotspot-ctl.ps1`/`watchdog.ps1` 为自研封装（上游没有） |
 
 ## License
 

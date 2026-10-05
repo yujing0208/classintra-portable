@@ -1,0 +1,156 @@
+ClassIntra + Captive 热点劫持 · 使用说明（绿色版封装）
+==============================================
+
+【这是什么】
+  本机开一个 WiFi 热点，把学生平板对以下网站的访问"劫持"到
+  本机的 ClassIntra（http://localhost:9001）：
+    - changyan.com     畅言（ai / spark 等）
+  劫持发生在 DNS 层 + HTTPS 层，不依赖浏览器，也不需要外网。
+
+【核心特性】
+  - 零客户端配置 — 学生平板无需安装软件或修改网络设置
+  - 协议全覆盖   — 支持 HTTPS 与 WebSocket，适配现代 Web 应用
+  - 开机自启     — 通过 Windows 计划任务实现系统启动时自动运行
+  - 进程守护     — 内置看门狗 watchdog.ps1，ClassIntra 崩溃后自动重启
+  - 热点监控     — 每 20 秒检测热点接口，断线后自动重新开启
+  - 静默运行     — 服务后台运行，不干扰正常教学功能
+
+【运行前提】
+  1. 本机是 Windows 10/11
+  2. 以管理员身份运行（captive 要占用 53 / 443 端口）
+  3. 本机至少有一个"活动"的网络连接（有线/无线都行，不需要外网）
+
+【首次设置（只做一次）】
+  用记事本打开 server\.env，找到 ADMIN_USER_IDS=250100 这一行，
+  改成你的班管 ID（形如 250100；多个用英文逗号分隔），保存后重启服务生效。
+
+【课表怎么导入/修改】
+  课表数据存在单个文件里，改它就是"导入"：
+    Resources\public\kb.yml    （完整路径 D:\ClassIntra绿色交付\Resources\public\kb.yml）
+
+  · 用记事本 / VSCode 打开，务必存为 UTF-8 编码；改完保存、刷新页面即生效（无需重启服务）。
+  · subjects   科目表。name = 全名（课节里引用它）；simplified_name = 格子里显示的简称。
+  · schedules  每天课表。enable_day：1=周一 … 5=周五；weeks 填 all（单/双周填 odd / even）；
+               classes 里每节课写 subject / start_time / end_time。
+  · 每节课落在表格的哪一段，由 start_time 决定：
+      早读<08:00 | 上午<12:00 | 下午<17:20 | 课外活动<18:00 | 听力<19:10 | 新闻联播<19:30 | 晚自习<21:30
+    同一时段写多节会横向并排显示（连堂/分层走班）。
+  · 本部署包已按"2026-2027 学年 第一学期 · 高二 54 班"填好；所用作息见 kb.yml 顶部注释。
+
+  注意：
+    ① 课表页那个"笔形"图标是"调课"，只改本机浏览器里的显示，不会写回 kb.yml；
+    ② 课节里可以写 teacher: 教师名，但当前前端不显示（仅作数据留存）；
+    ③ "第几周"由课表页左上角的开始日期决定，首次使用请把它设为本学期第一天。
+【一键启动（推荐）】
+  双击 一键启动.bat
+  脚本会自动提权（UAC 弹窗点"是"），之后全程无需任何手动操作：
+
+    [1/4] 关闭已有热点        —— 释放 UDP 53 端口
+    [2/4] 启动 ClassIntra     —— 并等它真正跑起来
+    [3/4] 准备 captive        —— 放行防火墙 53 / 443
+    [4/4] 启动 captive + 看门狗 —— captive 在当前窗口运行并先占住 UDP 53
+                                 后台看门狗守护 ClassIntra 与热点
+                                 随后热点自动打开（后台，无需干预）
+
+  全部跑在这一条命令窗口里。关闭窗口（或 Ctrl+C）即全部停止。
+  启动完成后：
+    ClassIntra : http://localhost:9001
+    日志目录   : logs\  （classintra.log / hotspot.log / captive.log / watchdog.log）
+
+【进程守护 + 热点监控（看门狗）】
+  由 captive\watchdog.ps1 提供，随启动脚本在后台常驻，每 20 秒检查一次：
+
+  - 进程守护（ClassIntra）
+      同时用两种方式判断存活：node 进程是否在跑 src\app.js、
+      9001 端口是否在监听。两者都判定为"不在"时才重启，
+      并写入日志 logs\watchdog.log。
+  - 热点监控
+      检测本机 192.168.137.1 是否存在；热点接口消失（断线/被关）时
+      自动调用 hotspot-ctl.ps1 重新开启，顺序仍是"先占 53 再开热点"。
+  - captive 自身
+      由启动窗口的前台重启循环守护：captive 退出后 5 秒原地重启，
+      日志继续显示在同一个窗口里。
+  - 防抖
+      同一个组件两次重启之间至少间隔 60 秒，避免反复重启。
+  - 停止
+      关闭启动窗口（或 Ctrl+C）即可 —— 看门狗检测到窗口关闭会自行退出；
+      也可以在 captive\ 下新建一个空的 watchdog.stop 文件来单独停掉看门狗。
+
+【为什么热点是最后才开的（关键）】
+  Windows 移动热点背后是 ICS（Internet Connection Sharing 网络共享）。
+  热点一开，ICS 的 DNS 代理就会占用 0.0.0.0:53 —— 正好是 captive
+  DNS 劫持需要的那个端口。两条路都会失败：
+    - 先开热点：ICS 占住 53 → captive 绑定失败 → 劫持失效
+    - 停掉 ICS 释放 53：Windows 会立刻把移动热点一起关掉
+  实测得出的正确顺序是：captive 先占住 53，再开热点。
+  这样 ICS 抢不到 53，但热点本身照常可用，劫持也正常生效。
+
+【热点两种方式（自动选择）】
+  1. netsh 承载网络（hostednetwork）—— 首选
+     不依赖 ICS、最多 100 台、开机未登录（SYSTEM 计划任务）也能用。
+  2. Windows 移动热点（系统设置里那个）
+     承载网络不可用时自动回退。需要用户已登录桌面，
+     连接数由 Windows 固定限制（约 8 台），无法改成 30。
+  启动过程记录在 logs\hotspot.log。
+
+【关于最大连接数】
+  - netsh 承载网络的 maxclient 参数在新版 Windows（如 26200）已不被
+    支持，脚本会自动去掉该参数重试；承载网络本身默认上限为 100。
+  - Windows 移动热点的连接数上限由系统固定（约 8 台），
+    注册表 MaxNumberOfPeers 对它无效，无法提高到 30。
+    若要 30 台以上稳定连接，建议使用支持承载网络的机器，或外接路由器。
+
+【开机自启（可选）】
+  右键 设置开机自启.bat → 以管理员身份运行
+  注册计划任务 ClassIntraService：SYSTEM 账户 + 系统启动触发，
+  开机（不登录）即自动运行，后台静默、无窗口。
+  卸载：任务计划程序里删除 ClassIntraService 即可。
+  注意：SYSTEM 会话里只有 netsh 承载网络可用；
+        若本机不支持承载网络，移动热点需要用户登录后才能打开。
+
+【如果学生端是 App（不是浏览器）】
+  App 访问被劫持域名时，若校验自签证书失败，可能显示"网络异常"
+  或"证书错误"，这是正常现象（证书是自签的）。
+  解决办法（任选）：
+    a. 让学生用浏览器访问（能点"继续访问"）
+    b. 把 captive\certs\cert.pem 装进平板（更高级，学校机器不便就跳过）
+    c. 若只依赖 App，需确认该 App 是否允许忽略证书错误
+
+【常见问题】
+  * 双击 一键启动.bat 一闪而过
+    → 大概率是 UAC 弹窗被别的窗口挡住，或在 UAC 里点了"否"。
+      重新双击一次，在 UAC 弹窗点"是"即可。
+  * 提示 "netsh hotspot unavailable" 之后热点没起来
+    → 正常流程会紧接着回退到系统移动热点，看窗口里有没有
+      "hotspot online ... via Windows Mobile Hotspot"。
+      若两种都失败，看 logs\hotspot.log 的最后几行。
+  * 热点开启失败
+    → 本机至少要有一个"活动"的网络连接（没外网也可以）；
+      完全没有活动连接时 Windows 开不了移动热点。
+  * 服务崩溃了会怎样
+    → 看门狗会自动把它拉起来，过程记录在 logs\watchdog.log。
+      看到 "is NOT running - restarting it" 就是自动恢复生效了。
+  * 443 端口被占用
+    → 常见元凶：Steam++/Watt Toolkit、其它本地 HTTPS 服务。
+      先退出它们再启动。
+  * 学生能连热点但访问域名没反应
+    → 看 captive 日志有没有 "[DNS] HIT xxx"；
+      没有 HIT = 学生设备没用本机做 DNS，多半连了别的网或开了自己的流量。
+  * 端口冲突（9001 被占用）
+    → 编辑 server\.env 中 PORT / WS_PORT / RELAY_PORT 换成别的数字。
+  * 想清空数据重新开始
+    → 停止服务后删除 server\database\classintra.db，再启动会自动重建空库。
+
+【目录说明】
+  一键启动.bat                唯一启动入口（ClassIntra + captive + 热点 + 看门狗）
+  设置开机自启.bat            注册开机自启计划任务（管理员运行）
+  captive\                    热点劫持
+    hotspot-redirect.js        DNS 劫持 + HTTPS 反代
+    hotspot-ctl.ps1            热点控制器（off / on / status）
+    watchdog.ps1               看门狗：进程守护 + 热点监控
+    certs\cert.pem / key.pem   自签证书（有效期至 2031）
+  runtime\                    内置 Node 运行时（勿删）
+  server\                     ClassIntra 主服务（含 .env / database）
+  logs\                       运行日志（classintra.log / hotspot.log / captive.log / watchdog.log）
+
+作者：余京 YuJing
